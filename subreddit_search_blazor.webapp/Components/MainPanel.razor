@@ -1,0 +1,169 @@
+@using System.Text.Json
+@using subreddit_search_blazor.webapp.Models
+@inject HttpClient HttpClient
+@inject IJSRuntime IJSRuntime
+
+<div 
+    id="subreddit-container" 
+    class="h-100 d-flex overflow-x-scroll" 
+    style="max-width: 1150px;flex-grow: 0; flex-shrink: 0; flex-basis: @(Math.Min(_subReddits.Count, 4) * 300)px;">
+    @foreach (var subreddit in _subReddits)
+    {
+        <SubredditPanel Subreddit="subreddit" 
+                        OnRefreshClick="@RefreshSubredditHandler" 
+                        OnRemoveClick="@RemoveSubredditHandler" />
+    }    
+</div>
+
+<div class="w-100 h-100">
+    <div style="height:50px;">
+        <button
+            class="btn btn-lg"
+            @onclick="ShowModal">
+            <i class="bi-plus-circle"></i>
+        </button>
+    </div>
+
+    <div class="d-flex justify-content-center align-items-center h-75">
+        <p class="text-opacity-50">Press the <i class="bi-plus-circle"></i> icon to add a subreddit</p>
+    </div>
+
+    <div id="search-subreddit-modal"
+         class="modal modal-blur fade"
+         style="display: none"
+         aria-hidden="false"
+         tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                @if (_fetching)
+                {
+                    <div 
+                        class="progress" 
+                        role="progressbar" 
+                        aria-label="Loading content" 
+                        aria-valuenow="100" 
+                        aria-valuemin="0" 
+                        aria-valuemax="100"
+                        style="height: 5px; position: sticky;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated w-100"></div>
+                    </div>
+                }
+                <div class="modal-body text-center">
+                    <p>Enter the name of the subreddit</p>
+                    <input
+                        class="form-control"
+                        type="text"
+                        id="search_field"
+                        name="search_field"
+                        @bind="_searchText">
+                    @if (!string.IsNullOrEmpty(_errorText))
+                    {
+                        <p class="text-danger">@_errorText</p>
+                    }
+                </div>
+                <div class="modal-footer">
+                    <button
+                        type="button"
+                        class="btn w-100"
+                        @onclick="FetchSubredditData">Add Subreddit</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code
+{
+    string? _searchText;
+    string? _errorText;
+    IList<RedditEntry> _subReddits = [];
+    bool _fetching = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await base.OnInitializedAsync();
+        await LoadLocalStorageSubreddits();
+    }
+
+    private async Task ShowModal()
+    {
+        _errorText = null;
+        _searchText = null;
+        await IJSRuntime.InvokeVoidAsync("showModal");
+    }
+
+    private async Task LoadLocalStorageSubreddits()
+    {
+        var response = await IJSRuntime.InvokeAsync<string>("localStorage.getItem", "subreddit_items");
+        if (!string.IsNullOrWhiteSpace(response))
+        {
+            _subReddits = JsonSerializer.Deserialize<List<RedditEntry>>(response) ?? [];
+        }
+    }
+    
+    private async Task SetLocalStorageSubreddits()
+    {
+        var serializedSubreddits = JsonSerializer.Serialize(_subReddits);
+        await IJSRuntime.InvokeAsync<string>("localStorage.setItem", "subreddit_items", serializedSubreddits);
+    }
+
+    private async Task RefreshSubredditHandler(Guid id)
+    {
+        var subreddit = _subReddits.FirstOrDefault(r => r.Id.Equals(id))!;
+        try
+        {
+            var response = await HttpClient.GetAsync(subreddit.Url);
+            if (!response.IsSuccessStatusCode) throw new Exception(await response.Content.ReadAsStringAsync());
+            var stringContent = await response.Content.ReadAsStringAsync();
+            var redditContent = JsonSerializer.Deserialize<Reddit>(stringContent);
+            if (redditContent is not null)
+            {
+                var idx = _subReddits.IndexOf(subreddit);
+                _subReddits[idx] = RedditEntry.Create(redditContent, subreddit.Url);
+                await SetLocalStorageSubreddits();
+            }
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e);
+            await IJSRuntime.InvokeVoidAsync("console.error", e.ToString());
+        }
+    }
+
+    private async Task RemoveSubredditHandler(Guid id)
+    {
+        var subreddit = _subReddits.FirstOrDefault(r => r.Id.Equals(id))!;
+        Console.WriteLine(subreddit);
+        _subReddits.Remove(subreddit);
+        await SetLocalStorageSubreddits();
+    }
+
+    private async Task FetchSubredditData()
+    {
+        _fetching = true;
+        var url = $"https://www.reddit.com/r/{_searchText}.json";
+        try
+        {
+            var response = await HttpClient.GetAsync(url);
+            if (!response.IsSuccessStatusCode) throw new Exception(await response.Content.ReadAsStringAsync());
+            var stringContent = await response.Content.ReadAsStringAsync();
+            var redditContent = JsonSerializer.Deserialize<Reddit>(stringContent);
+            if (redditContent is not null)
+            {
+                _subReddits.Add(RedditEntry.Create(redditContent, url));
+                await SetLocalStorageSubreddits();
+                await IJSRuntime.InvokeVoidAsync("closeModal");
+            }
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e);
+            _errorText = e.Message;
+            await IJSRuntime.InvokeVoidAsync("console.error", e.ToString());
+        }
+        finally
+        {
+            _fetching = false;
+        }
+    }
+}
